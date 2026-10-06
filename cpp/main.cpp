@@ -1,5 +1,6 @@
 #include "physics.hpp"
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_render.h>
 
 extern "C" {
 #include <lauxlib.h>
@@ -78,7 +79,7 @@ static void fill_circle(SDL_Renderer *r, const Camera &cam, Vec2 c,
 static void draw_arrow_px(SDL_Renderer *r, SDL_FPoint a, SDL_FPoint b) {
   SDL_RenderLine(r, a.x, a.y, b.x, b.y);
   float dx = b.x - a.x, dy = b.y - a.y;
-  float len = std::sqrt(dx * dx + dy * dy);
+  float len = std::sqrt(std::pow(dx, 2) + std::pow(dy, 2));
   if (len < 6.0f)
     return; // curta de mais para ter uma ponta
   float ux = dx / len, uy = dy / len;
@@ -99,39 +100,141 @@ static void draw_text(SDL_Renderer *r, const Camera &cam, Vec2 p, float dx,
   SDL_RenderDebugText(r, s.x + dx, s.y + dy, text);
 }
 
+// ---------------- Configuração vinda do Lua --------------------------------
+struct Config {
+  std::string title = "Plano Inclinado de Galileu";
+  int width = 1280, height = 720;
+
+  double g = 9.81, h0 = 5.0, theta1 = 45.0, theta2 = 30.0; // graus
+
+  double radius = 0.3;
+  SDL_FColor ballColor{1.0f, 0.6f, 0.2f, 1.0f};
+
+  double scale = 40.0, velScale = 0.5, maxRun = 15.0;
+
+  std::vector<double> angles; // graus (usada na Etapa 5)
+};
+
+// Os helpers leem um campo da tabela que está no TOPO da pilha.
+static double lua_num(lua_State *L, const char *k, double def) {
+  lua_getfield(L, -1, k);
+  double v = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : def;
+  lua_pop(L, 1);
+  return v;
+}
+
+static std::string lua_str(lua_State *L, const char *k,
+                           const std::string &def) {
+  lua_getfield(L, -1, k);
+  std::string v = lua_isstring(L, -1) ? lua_tostring(L, -1) : def;
+  lua_pop(L, 1);
+  return v;
+}
+
+static void lua_color(lua_State *L, const char *k, SDL_FColor &out) {
+  lua_getfield(L, -1, k);
+  if (lua_istable(L, -1)) {
+    float c[3];
+    for (int i = 0; i < 3; ++i) {
+      lua_rawgeti(L, -1, i + 1);
+      c[i] = (float)lua_tonumber(L, -1) / 255.0f;
+      lua_pop(L, 1);
+    }
+    out = SDL_FColor{c[0], c[1], c[2], 1.0f};
+  }
+  lua_pop(L, 1);
+}
+
+// Chama fn(L) com a subtabela `name` no topo da pilha (se existir).
+template <typename F>
+static void lua_section(lua_State *L, const char *name, F fn) {
+  lua_getfield(L, -1, name);
+  if (lua_istable(L, -1))
+    fn(L);
+  lua_pop(L, 1);
+}
+
+// Lê o script para uma cópia; só sobrescreve `out` se tudo der certo.
+static bool load_config(lua_State *L, const char *path, Config &out) {
+  int top = lua_gettop(L);
+  if (luaL_dofile(L, path) != LUA_OK) {
+    fprintf(stderr, "[LUA] erro: %s\n", lua_tostring(L, -1));
+    lua_settop(L, top);
+    return false;
+  }
+  if (lua_gettop(L) != top + 1 || !lua_istable(L, -1)) {
+    fprintf(stderr, "[LUA] %s deve retornar uma tabela\n", path);
+    lua_settop(L, top);
+    return false;
+  }
+
+  Config c = out;
+  c.title = lua_str(L, "title", c.title);
+  c.width = (int)lua_num(L, "width", c.width);
+  c.height = (int)lua_num(L, "height", c.height);
+
+  lua_section(L, "physics", [&](lua_State *L) {
+    c.g = lua_num(L, "g", c.g);
+    c.h0 = lua_num(L, "h0", c.h0);
+    c.theta1 = lua_num(L, "theta1", c.theta1);
+    c.theta2 = lua_num(L, "theta2", c.theta2);
+  });
+  lua_section(L, "ball", [&](lua_State *L) {
+    c.radius = lua_num(L, "radius", c.radius);
+    lua_color(L, "color", c.ballColor);
+  });
+  lua_section(L, "view", [&](lua_State *L) {
+    c.scale = lua_num(L, "scale", c.scale);
+    c.velScale = lua_num(L, "vel_scale", c.velScale);
+    c.maxRun = lua_num(L, "max_run", c.maxRun);
+  });
+
+  lua_getfield(L, -1, "angles");
+  if (lua_istable(L, -1)) {
+    c.angles.clear();
+    int n = (int)lua_rawlen(L, -1);
+    for (int i = 1; i <= n; ++i) {
+      lua_rawgeti(L, -1, i);
+      if (lua_isnumber(L, -1))
+        c.angles.push_back(lua_tonumber(L, -1));
+      lua_pop(L, 1);
+    }
+  }
+  lua_pop(L, 1);
+  lua_settop(L, top); // remove a tabela retornada
+
+  // validação
+  if (c.g <= 0 || c.h0 <= 0 || c.radius <= 0 || c.scale <= 0 || c.width < 200 ||
+      c.height < 200) {
+    fprintf(stderr,
+            "[LUA] valores invalidos em %s (g, h0, radius, scale > 0)\n", path);
+    return false;
+  }
+  c.theta1 = std::clamp(c.theta1, 1.0, 85.0);
+  c.theta2 = std::clamp(c.theta2, 0.0, 85.0);
+
+  out = std::move(c);
+  return true;
+}
+
 int main(int argc, char *argv[]) {
   // ---------- Lua ----------
   lua_State *L = luaL_newstate();
   luaL_openlibs(L);
-  if (luaL_dofile(L, GALILEU_SCRIPTS_DIR "/config.lua") != LUA_OK) {
-    fprintf(stderr, "[LUA] erro: %s\n", lua_tostring(L, -1));
+  Config cfg;
+  if (!load_config(L, GALILEU_SCRIPTS_DIR "/config.lua", cfg)) {
+    lua_close(L);
     return 1;
   }
-  auto get_str = [&](const char *k) {
-    lua_getfield(L, -1, k);
-    std::string s = lua_tostring(L, -1);
-    lua_pop(L, 1);
-    return s;
-  };
-  auto get_int = [&](const char *k) {
-    lua_getfield(L, -1, k);
-    int v = (int)lua_tointeger(L, -1);
-    lua_pop(L, 1);
-    return v;
-  };
-  std::string title = get_str("title");
-  int w = get_int("width");
-  int h = get_int("height");
-  lua_pop(L, 1);
-  printf("[LUA] %s (%dx%d)\n", title.c_str(), w, h);
+  printf("[LUA] %s (%dx%d)\n", cfg.title.c_str(), cfg.width, cfg.height);
 
   // ---------- SDL3 ----------
   if (!SDL_Init(SDL_INIT_VIDEO)) {
     fprintf(stderr, "SDL_init: %s\n", SDL_GetError());
     return -1;
   }
-  SDL_Window *window =
-      SDL_CreateWindow(title.c_str(), w, h, SDL_WINDOW_RESIZABLE);
+  SDL_Window *window = SDL_CreateWindow(cfg.title.c_str(), cfg.width,
+                                        cfg.height, SDL_WINDOW_RESIZABLE);
   if (!window) {
     fprintf(stderr, "SDL_window: %s\n", SDL_GetError());
     SDL_Quit();
@@ -146,12 +249,12 @@ int main(int argc, char *argv[]) {
   }
 
   // ---------- Cena ----------
-  const double H = 5.0;
-  const double radius = 0.3;
-  const double theta1 = deg2rad(45.0);
-  double theta2_deg = 30.0;
-  const double maxRun = 15.0;
-  const double g = 9.81;
+  const double H = cfg.h0;
+  const double radius = cfg.radius;
+  const double theta1 = deg2rad(cfg.theta1);
+  double theta2_deg = cfg.theta2;
+  const double maxRun = cfg.maxRun;
+  const double g = cfg.g;
 
   PhysicsWorld *world = physics_create(g, H, theta1, deg2rad(theta2_deg));
   if (!world) {
@@ -160,6 +263,8 @@ int main(int argc, char *argv[]) {
   }
 
   Camera cam;
+  cam.scale = cfg.scale;
+  cam.center.y = H * 0.5; // centraliza verticalmente a altura da cena
 
   // ---------- Loop de passo fixo ----------
   const double dt = 1.0 / 120.0;
@@ -239,18 +344,17 @@ int main(int argc, char *argv[]) {
     SDL_SetRenderDrawColor(renderer, 230, 230, 230, 255);
     draw_line(renderer, cam, leftTop, valley);
     draw_line(renderer, cam, valley, rightEnd);
-    snprintf(buf, sizeof buf, "Plano 1: %.1f graus", 45.0);
+    snprintf(buf, sizeof buf, "Plano 1: %.1f graus", cfg.theta1);
     draw_text(renderer, cam, {leftTop.x * 0.5, leftTop.y * 0.5}, -140, 6, buf);
     snprintf(buf, sizeof buf, "Plano 2: %.1f graus", theta2_deg);
     draw_text(renderer, cam, {rightEnd.x * 0.5, rightEnd.y * 0.5}, -40, 16,
               buf);
 
     // bola
-    fill_circle(renderer, cam, ball, radius,
-                SDL_FColor{1.0f, 0.6f, 0.2f, 1.0f});
+    fill_circle(renderer, cam, ball, cfg.radius, cfg.ballColor);
 
     // vetor velocidade (v com sinal * tangente) + módulo ao lado da seta
-    const double velScale = 0.5; // metros de seta por (m/s)
+    const double velScale = cfg.velScale; // metros de seta por (m/s)
     Vec2 vvec{st.v * st.tx, st.v * st.ty};
     Vec2 tip{ball.x + vvec.x * velScale, ball.y + vvec.y * velScale};
     SDL_SetRenderDrawColor(renderer, 90, 230, 130, 255);
@@ -291,7 +395,8 @@ int main(int argc, char *argv[]) {
       SDL_RenderDebugText(renderer, lx + 32, ly, "altura inicial h0");
 
       ly += 16;
-      SDL_SetRenderDrawColor(renderer, 255, 153, 51, 255);
+      SDL_SetRenderDrawColorFloat(renderer, cfg.ballColor.r, cfg.ballColor.g,
+                                  cfg.ballColor.b, 1.0f);
       SDL_FRect sw{lx + 6, ly, 12, 8};
       SDL_RenderFillRect(renderer, &sw);
       SDL_RenderDebugText(renderer, lx + 32, ly, "bola");
@@ -304,8 +409,8 @@ int main(int argc, char *argv[]) {
 
     // HUD numérico
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-    snprintf(buf, sizeof buf, "theta1 = 45.0 deg   theta2 = %.1f deg",
-             theta2_deg);
+    snprintf(buf, sizeof buf, "theta1 = %.1f deg   theta2 = %.1f deg",
+             cfg.theta1, theta2_deg);
     SDL_RenderDebugText(renderer, 10, 10, buf);
     snprintf(buf, sizeof buf, "t = %.2f s   passos = %ld   dt = 1/120 s",
              simTime, steps);
