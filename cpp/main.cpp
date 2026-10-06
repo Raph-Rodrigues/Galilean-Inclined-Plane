@@ -86,7 +86,7 @@ static void draw_arrow_px(SDL_Renderer *r, SDL_FPoint a, SDL_FPoint b) {
   SDL_RenderLine(r, b.x, b.y, b.x - head * (ux * c - uy * s),
                  b.y - head * (ux * s + uy * c));
   SDL_RenderLine(r, b.x, b.y, b.x - head * (ux * c + uy * s),
-                 b.y - head * (ux * c - uy * s));
+                 b.y - head * (uy * c - ux * s));
 }
 
 static void draw_arrow(SDL_Renderer *r, const Camera &cam, Vec2 from, Vec2 to) {
