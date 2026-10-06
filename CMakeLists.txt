@@ -26,7 +26,7 @@ FetchContent_Declare(
 FetchContent_Declare(
     Corrosion
     GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
-    GIT_TAG        v0.5
+    GIT_TAG        v0.6
 )
 
 FetchContent_MakeAvailable(SDL3 lua Corrosion)
