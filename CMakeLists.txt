@@ -11,8 +11,8 @@ include(FetchContent)
 FetchContent_Declare(
     SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG        release-3.2.0   # pode subir para uma 3.2.x mais recente
-    FIND_PACKAGE_ARGS 3.2 CONFIG
+    GIT_TAG        release-3.4.0   # pode subir para uma 3.4.x mais recente
+    FIND_PACKAGE_ARGS 3.4 CONFIG
 )
 
 # --- Lua (o repositório não tem CMakeLists, então montamos a lib) ---

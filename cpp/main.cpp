@@ -1,3 +1,4 @@
+#include "physics.hpp"
 #include <SDL3/SDL.h>
 
 extern "C" {
@@ -12,8 +13,6 @@ extern "C" {
 #include <numbers>
 #include <string>
 #include <vector>
-
-extern "C" double physics_add(double a, double b); // rust (sai na Etapa 2)
 
 constexpr double deg2rad(double d) { return d * std::numbers::pi / 180.0; }
 
@@ -76,9 +75,6 @@ static void fill_circle(SDL_Renderer *r, const Camera &cam, Vec2 c,
 }
 
 int main(int argc, char *argv[]) {
-  // ---------- Rust ----------
-  printf("[Rust] 2 + 3 = %.1f\n", physics_add(2.0, 3.0));
-
   // ---------- Lua ----------
   lua_State *L = luaL_newstate();
   luaL_openlibs(L);
@@ -124,12 +120,19 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  // ---------- Cena (valores fixos por enquanto; vão para o Lua na Etapa 4)
-  const double H = 5.0;      // altura inicial da bola (m)
-  const double radius = 0.3; // raio da bola (m)
+  // ---------- Cena ----------
+  const double H = 5.0;
+  const double radius = 0.3;
   const double theta1 = deg2rad(45.0);
-  double theta2_deg = 30.0;   // ângulo do 2º plano (setas mudam)
-  const double maxRun = 15.0; // comprimento máximo desenhado (m)
+  double theta2_deg = 30.0;
+  const double maxRun = 15.0;
+  const double g = 9.81;
+
+  PhysicsWorld *world = physics_create(g, H, theta1, deg2rad(theta2_deg));
+  if (!world) {
+    fprintf(stderr, "physics_create falhou\n");
+    return -1;
+  }
 
   Camera cam;
 
@@ -143,14 +146,13 @@ int main(int argc, char *argv[]) {
 
   bool running = true;
   while (running) {
-    // --- tempo real do frame ---
     Uint64 now = SDL_GetPerformanceCounter();
-    double frameTime = (double)(now - last) / freq;
+    double frameTime = std::min((double)(now - last) / freq, 0.25);
     last = now;
-    frameTime = std::min(frameTime, 0.25); // evita "espiral da morte"
     accumulator += frameTime;
 
     // --- entrada ---
+    bool restart = false;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
       if (e.type == SDL_EVENT_QUIT)
@@ -158,16 +160,23 @@ int main(int argc, char *argv[]) {
       if (e.type == SDL_EVENT_KEY_DOWN) {
         if (e.key.key == SDLK_ESCAPE)
           running = false;
-        if (e.key.key == SDLK_RIGHT)
-          theta2_deg = std::max(0.0, theta2_deg - 5.0);
-        if (e.key.key == SDLK_LEFT)
-          theta2_deg = std::min(75.0, theta2_deg + 5.0);
+        if (e.key.key == SDLK_LEFT || e.key.key == SDLK_RIGHT) {
+          theta2_deg += (e.key.key == SDLK_RIGHT) ? 5.0 : -5.0;
+          theta2_deg = std::clamp(theta2_deg, 0.0, 75.0);
+          physics_reset(world, g, H, theta1, deg2rad(theta2_deg));
+          simTime = 0.0;
+        }
+        if (e.key.key == SDLK_R) {
+          physics_reset(world, g, H, theta1, deg2rad(theta2_deg));
+          simTime = 0.0;
+        }
       }
     }
 
     // --- atualização: passos fixos ---
     while (accumulator >= dt) {
       // (Etapa 2: aqui chamaremos o passo de física em Rust)
+      physics_step(world, dt);
       simTime += dt;
       ++steps;
       accumulator -= dt;
@@ -185,8 +194,10 @@ int main(int argc, char *argv[]) {
     Vec2 rightEnd{run2 * std::cos(theta2), run2 * std::sin(theta2)};
 
     // bola: sobre o plano esquerdo, na altura H (centro deslocado pela normal)
-    Vec2 n1{std::sin(theta1), std::cos(theta1)};
-    Vec2 ball{leftTop.x + radius * n1.x, leftTop.y + radius * n1.y};
+    PhysicsState st;
+    physics_get_state(world, &st);
+    Vec2 n{-st.ty, st.tx}; // normal do plano (aponta "para cima")
+    Vec2 ball{st.x + radius * n.x, st.y + radius * n.y};
 
     // --- desenho ---
     SDL_SetRenderDrawColor(renderer, 20, 20, 30, 255);
@@ -213,6 +224,11 @@ int main(int argc, char *argv[]) {
     SDL_RenderDebugText(renderer, 10, 10, buf);
     snprintf(buf, sizeof buf, "t = %.2f s   passos = %ld   dt = 1/120 s",
              simTime, steps);
+    snprintf(buf, sizeof buf, "s = %7.3f m   v = %7.3f m/s   h = %6.3f m", st.s,
+             st.v, st.height);
+    SDL_RenderDebugText(renderer, 10, 52, buf);
+    snprintf(buf, sizeof buf, "E/m = %.6f J/kg", st.energy);
+    SDL_RenderDebugText(renderer, 10, 66, buf);
     SDL_RenderDebugText(renderer, 10, 24, buf);
     SDL_RenderDebugText(renderer, 10, 38,
                         "Setas esq/dir: muda theta2 | ESC: sair");
@@ -223,6 +239,7 @@ int main(int argc, char *argv[]) {
   SDL_DestroyRenderer(renderer);
   SDL_DestroyWindow(window);
   SDL_Quit();
+  physics_destroy(world);
   lua_close(L);
   return 0;
 }
