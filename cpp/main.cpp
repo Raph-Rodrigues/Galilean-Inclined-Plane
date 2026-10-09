@@ -1,6 +1,7 @@
 #include "physics.hpp"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_render.h>
+#include <cstddef>
 
 extern "C" {
 #include <lauxlib.h>
@@ -217,6 +218,35 @@ static bool load_config(lua_State *L, const char *path, Config &out) {
   return true;
 }
 
+// linha tracejada horizontal ancorada no mundo (não "desliza" com a câmera)
+static void draw_dashed(SDL_Renderer *r, const Camera &cam, double y,
+                        double xmin, double xmax, double dash) {
+  double period = 2.0 * dash;
+  for (double x = std::floor(xmin / period) * period; x < xmax; x += period) {
+    draw_line(r, cam, {x, y}, {x + dash, y});
+  }
+}
+
+// ---------------- Sequência de situações -----------------------------------
+enum class Phase { Running, Holding };
+
+struct Result {
+  bool done = false;
+  double distance = 0.0; // S no ponto mais alto no plano 2
+  double height = 0.0;
+};
+
+struct Sequence {
+  std::vector<double> angles; // graus
+  std::vector<Result> results;
+  size_t index = 0;
+  Phase phase = Phase::Running;
+  double holdTimer = 0.0;
+
+  double current() const { return angles[index]; }
+  double horizontal() const { return current() < 0.5; }
+};
+
 int main(int argc, char *argv[]) {
   // ---------- Lua ----------
   lua_State *L = luaL_newstate();
@@ -248,15 +278,25 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  // ---------- Cena ----------
+  // ---------- Cena (valores vindos do Lua) ----------
   const double H = cfg.h0;
   const double radius = cfg.radius;
   const double theta1 = deg2rad(cfg.theta1);
-  double theta2_deg = cfg.theta2;
   const double maxRun = cfg.maxRun;
   const double g = cfg.g;
+  const double velScale = cfg.velScale;
 
-  PhysicsWorld *world = physics_create(g, H, theta1, deg2rad(theta2_deg));
+  Sequence seq;
+  seq.angles = cfg.angles;
+  if (seq.angles.empty()) {
+    seq.angles.push_back(cfg.theta2);
+  }
+  for (double &a : seq.angles) {
+    a = std::clamp(a, 0.0, 85.0);
+  }
+  seq.results.assign(seq.angles.size(), Result{});
+
+  PhysicsWorld *world = physics_create(g, H, theta1, deg2rad(seq.current()));
   if (!world) {
     fprintf(stderr, "physics_create falhou\n");
     return -1;
@@ -264,15 +304,25 @@ int main(int argc, char *argv[]) {
 
   Camera cam;
   cam.scale = cfg.scale;
-  cam.center.y = H * 0.5; // centraliza verticalmente a altura da cena
+  bool camInit = false;
 
   // ---------- Loop de passo fixo ----------
   const double dt = 1.0 / 120.0;
+  const double holdTime = 2.0; // pausa no ponto mais alto (s)
   double accumulator = 0.0;
   double simTime = 0.0;
   long steps = 0;
   Uint64 last = SDL_GetPerformanceCounter();
   const double freq = (double)SDL_GetPerformanceFrequency();
+
+  auto begin_situation = [&](size_t idx) {
+    seq.index = idx % seq.angles.size();
+    seq.phase = Phase::Running;
+    seq.holdTimer = 0.0;
+    seq.results[seq.index] = Result{};
+    physics_reset(world, g, H, theta1, deg2rad(seq.current()));
+    simTime = 0.0;
+  };
 
   bool running = true;
   while (running) {
@@ -282,63 +332,96 @@ int main(int argc, char *argv[]) {
     accumulator += frameTime;
 
     // --- entrada ---
-    bool restart = false;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
       if (e.type == SDL_EVENT_QUIT)
         running = false;
       if (e.type == SDL_EVENT_KEY_DOWN) {
+        const size_t n = seq.angles.size();
         if (e.key.key == SDLK_ESCAPE)
           running = false;
-        if (e.key.key == SDLK_LEFT || e.key.key == SDLK_RIGHT) {
-          theta2_deg += (e.key.key == SDLK_RIGHT) ? -5.0 : 5.0;
-          theta2_deg = std::clamp(theta2_deg, 0.0, 75.0);
-          physics_reset(world, g, H, theta1, deg2rad(theta2_deg));
-          simTime = 0.0;
-        }
-        if (e.key.key == SDLK_R) {
-          physics_reset(world, g, H, theta1, deg2rad(theta2_deg));
-          simTime = 0.0;
-        }
+        if (e.key.key == SDLK_RIGHT)
+          begin_situation(seq.index + 1);
+        if (e.key.key == SDLK_LEFT)
+          begin_situation(seq.index + n - 1);
+        if (e.key.key == SDLK_R)
+          begin_situation(seq.index);
       }
     }
 
-    // --- atualização: passos fixos ---
+    // --- atualização: passos fixos + máquina de estados ---
     while (accumulator >= dt) {
-      // (Etapa 2: aqui chamaremos o passo de física em Rust)
-      physics_step(world, dt);
-      simTime += dt;
-      ++steps;
+      if (seq.phase == Phase::Running) {
+        physics_step(world, dt);
+        simTime += dt;
+        ++steps;
+
+        // ponto mais alto no plano 2: está nele (s > 0) e parou de subir
+        PhysicsState s2;
+        physics_get_state(world, &s2);
+        if (!seq.horizontal() && s2.s > 0.0 && s2.v <= 0.0) {
+          seq.phase = Phase::Holding;
+          seq.holdTimer = holdTime;
+          seq.results[seq.index] = Result{true, s2.s, s2.height};
+        }
+      } else { // Holding: física congelada
+        seq.holdTimer -= dt;
+        if (seq.holdTimer <= 0.0)
+          begin_situation(seq.index + 1);
+      }
       accumulator -= dt;
     }
 
-    // --- tamanho atual da janela ---
+    // --- estado e geometria da situação atual ---
     SDL_GetRenderOutputSize(renderer, &cam.w, &cam.h);
-
-    // --- geometria dos planos ---
-    const double theta2 = deg2rad(theta2_deg);
-    Vec2 valley{0.0, 0.0};
-    Vec2 leftTop{-H / std::sin(theta1) * std::cos(theta1), H};
-    double run2 = (theta2 > 1e-6) ? H / std::sin(theta2) : 1e9;
-    run2 = std::min(run2, maxRun / std::max(std::cos(theta2), 1e-6));
-    Vec2 rightEnd{run2 * std::cos(theta2), run2 * std::sin(theta2)};
-
-    // bola: sobre o plano esquerdo, na altura H (centro deslocado pela normal)
     PhysicsState st;
     physics_get_state(world, &st);
+
+    const double theta2_deg = seq.current();
+    const double theta2 = deg2rad(theta2_deg);
+    const bool horizontal = seq.horizontal();
+
+    Vec2 valley{0.0, 0.0};
+    Vec2 leftTop{-H / std::tan(theta1), H};
+    double run2 =
+        horizontal ? maxRun
+                   : std::min(H / std::sin(theta2), maxRun / std::cos(theta2));
+    Vec2 rightEnd{run2 * std::cos(theta2), run2 * std::sin(theta2)};
+
     Vec2 n{-st.ty, st.tx}; // normal do plano (aponta "para cima")
     Vec2 ball{st.x + radius * n.x, st.y + radius * n.y};
+
+    // --- câmera: enquadra a cena (inclinado) ou segue a bola (horizontal) ---
+    double targetScale, targetX;
+    if (horizontal) {
+      targetScale = cfg.scale;
+      targetX = std::max(0.0, ball.x + 3.0);
+    } else {
+      double xl = leftTop.x - 1.5, xr = rightEnd.x + 1.5;
+      targetScale = std::min(cfg.scale, cam.w * 0.92 / (xr - xl));
+      targetX = 0.5 * (xl + xr);
+    }
+    double k = camInit ? 1.0 - std::exp(-4.0 * frameTime) : 1.0;
+    camInit = true;
+    cam.scale += (targetScale - cam.scale) * k;
+    cam.center.x += (targetX - cam.center.x) * k;
+    cam.center.y = H * 0.5;
+
+    const double halfW = cam.w * 0.5 / cam.scale;
+    const double xmin = cam.center.x - halfW, xmax = cam.center.x + halfW;
+    if (horizontal)
+      rightEnd = {xmax + 1.0, 0.0}; // plano infinito: vai até a borda da tela
 
     // --- desenho ---
     char buf[160];
     SDL_SetRenderDrawColor(renderer, 20, 20, 30, 255);
     SDL_RenderClear(renderer);
 
-    // linha de altura de referência
+    // linha de altura de referência (tracejada, ancorada no mundo)
     SDL_SetRenderDrawColor(renderer, 120, 120, 140, 255);
-    draw_dashed(renderer, cam, {-12.0, H}, {maxRun, H}, 0.4);
+    draw_dashed(renderer, cam, H, xmin, xmax, 12.0 / cam.scale);
     snprintf(buf, sizeof buf, "altura inicial h0 = %.1f m", H);
-    draw_text(renderer, cam, {-12.0, H}, 4, -14, buf);
+    draw_text(renderer, cam, {xmin, H}, 8, -14, buf);
 
     // planos + legendas
     SDL_SetRenderDrawColor(renderer, 230, 230, 230, 255);
@@ -347,14 +430,15 @@ int main(int argc, char *argv[]) {
     snprintf(buf, sizeof buf, "Plano 1: %.1f graus", cfg.theta1);
     draw_text(renderer, cam, {leftTop.x * 0.5, leftTop.y * 0.5}, -140, 6, buf);
     snprintf(buf, sizeof buf, "Plano 2: %.1f graus", theta2_deg);
-    draw_text(renderer, cam, {rightEnd.x * 0.5, rightEnd.y * 0.5}, -40, 16,
-              buf);
+    draw_text(renderer, cam,
+              {std::clamp(rightEnd.x * 0.5, xmin + 4.0, xmax - 12.0),
+               rightEnd.y * 0.5},
+              -40, 16, buf);
 
     // bola
-    fill_circle(renderer, cam, ball, cfg.radius, cfg.ballColor);
+    fill_circle(renderer, cam, ball, radius, cfg.ballColor);
 
-    // vetor velocidade (v com sinal * tangente) + módulo ao lado da seta
-    const double velScale = cfg.velScale; // metros de seta por (m/s)
+    // vetor velocidade + módulo ao lado da seta
     Vec2 vvec{st.v * st.tx, st.v * st.ty};
     Vec2 tip{ball.x + vvec.x * velScale, ball.y + vvec.y * velScale};
     SDL_SetRenderDrawColor(renderer, 90, 230, 130, 255);
@@ -365,20 +449,34 @@ int main(int argc, char *argv[]) {
     // módulo da velocidade em destaque (texto 2x)
     SDL_SetRenderScale(renderer, 2.0f, 2.0f);
     snprintf(buf, sizeof buf, "|v| = %.2f m/s", std::fabs(st.v));
-    SDL_RenderDebugText(renderer, 10.0f / 2.0f, (cam.h - 70.0f) / 2.0f, buf);
+    SDL_RenderDebugText(renderer, 10.0f / 2.0f, (cam.h - 80.0f) / 2.0f, buf);
     SDL_SetRenderScale(renderer, 1.0f, 1.0f);
 
-    // descrição da situação atual
+    // descrição da situação atual (rodapé)
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-    if (theta2_deg < 0.5) {
-      SDL_RenderDebugText(renderer, 10, cam.h - 40.0f,
-                          "Plano 2 horizontal: sem forca ao longo do movimento "
-                          "-> MRU (inercia)");
+    if (horizontal) {
+      SDL_RenderDebugText(renderer, 10, cam.h - 46.0f,
+                          "Plano 2 horizontal: sem forca ao longo do "
+                          "movimento -> MRU (inercia)");
+      snprintf(buf, sizeof buf,
+               "Distancia percorrida no plano 2: %.1f m, e a bola nao para. "
+               "Seta direita: recomeca a sequencia",
+               std::max(st.s, 0.0));
+      SDL_RenderDebugText(renderer, 10, cam.h - 32.0f, buf);
+    } else if (seq.phase == Phase::Holding) {
+      const Result &res = seq.results[seq.index];
+      snprintf(buf, sizeof buf,
+               "A bola subiu ate h = %.3f m (h0 = %.3f m), percorrendo %.2f m "
+               "no plano 2",
+               res.height, H, res.distance);
+      SDL_RenderDebugText(renderer, 10, cam.h - 46.0f, buf);
+      snprintf(buf, sizeof buf, "Proxima situacao em %.1f s", seq.holdTimer);
+      SDL_RenderDebugText(renderer, 10, cam.h - 32.0f, buf);
     } else {
       snprintf(buf, sizeof buf,
-               "Plano 2 a %.1f graus: a bola sobe ate a altura inicial h0",
+               "Plano 2 a %.1f graus: a bola desce o plano 1 e sobe o plano 2",
                theta2_deg);
-      SDL_RenderDebugText(renderer, 10, cam.h - 40.0f, buf);
+      SDL_RenderDebugText(renderer, 10, cam.h - 46.0f, buf);
     }
 
     // caixa de legenda (canto superior direito)
@@ -409,8 +507,9 @@ int main(int argc, char *argv[]) {
 
     // HUD numérico
     SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-    snprintf(buf, sizeof buf, "theta1 = %.1f deg   theta2 = %.1f deg",
-             cfg.theta1, theta2_deg);
+    snprintf(buf, sizeof buf,
+             "Situacao %zu/%zu   theta1 = %.1f   theta2 = %.1f deg",
+             seq.index + 1, seq.angles.size(), cfg.theta1, theta2_deg);
     SDL_RenderDebugText(renderer, 10, 10, buf);
     snprintf(buf, sizeof buf, "t = %.2f s   passos = %ld   dt = 1/120 s",
              simTime, steps);
@@ -420,8 +519,31 @@ int main(int argc, char *argv[]) {
     SDL_RenderDebugText(renderer, 10, 38, buf);
     snprintf(buf, sizeof buf, "E/m = %.6f J/kg", st.energy);
     SDL_RenderDebugText(renderer, 10, 52, buf);
-    SDL_RenderDebugText(renderer, 10, 66,
-                        "Setas: muda theta2 | R: reinicia | ESC: sair");
+    SDL_RenderDebugText(
+        renderer, 10, 66,
+        "Setas esq/dir: situacao anterior/proxima | R: reinicia | ESC: sair");
+
+    // tabela de resultados: distância percorrida no plano 2 por situação
+    SDL_RenderDebugText(renderer, 10, 90, "Distancia percorrida no plano 2:");
+    for (size_t i = 0; i < seq.angles.size(); ++i) {
+      const Result &r = seq.results[i];
+      bool cur = (i == seq.index);
+      if (cur)
+        SDL_SetRenderDrawColor(renderer, 255, 220, 120, 255);
+      else
+        SDL_SetRenderDrawColor(renderer, 190, 190, 205, 255);
+      if (r.done)
+        snprintf(buf, sizeof buf, "%c %5.1f graus: %6.2f m  (h = %.3f m)",
+                 cur ? '>' : ' ', seq.angles[i], r.distance, r.height);
+      else if (cur && horizontal)
+        snprintf(buf, sizeof buf, "%c %5.1f graus: %6.1f m ... (sem fim)", '>',
+                 seq.angles[i], std::max(st.s, 0.0));
+      else if (cur)
+        snprintf(buf, sizeof buf, "> %5.1f graus: em andamento", seq.angles[i]);
+      else
+        snprintf(buf, sizeof buf, "  %5.1f graus: --", seq.angles[i]);
+      SDL_RenderDebugText(renderer, 10, 104.0f + 14.0f * (float)i, buf);
+    }
 
     SDL_RenderPresent(renderer);
   }
