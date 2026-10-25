@@ -11,8 +11,8 @@ include(FetchContent)
 FetchContent_Declare(
     SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG        release-3.4.0   # pode subir para uma 3.4.x mais recente
-    FIND_PACKAGE_ARGS 3.4 CONFIG
+    GIT_TAG        release-3.2.0
+    FIND_PACKAGE_ARGS 3.2 CONFIG
 )
 
 # --- Lua (o repositório não tem CMakeLists, então montamos a lib) ---
@@ -26,7 +26,7 @@ FetchContent_Declare(
 FetchContent_Declare(
     Corrosion
     GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
-    GIT_TAG        v0.6
+    GIT_TAG        v0.5
 )
 
 FetchContent_MakeAvailable(SDL3 lua Corrosion)
@@ -45,7 +45,18 @@ endif()
 corrosion_import_crate(MANIFEST_PATH physics/Cargo.toml)
 
 # Executável
-add_executable(galileu cpp/main.cpp)
+add_executable(galileu
+    cpp/main.cpp
+    cpp/app/app.cpp
+    cpp/game/game.cpp
+    cpp/game/sequence.cpp
+    cpp/lua/script_host.cpp
+    cpp/physics/simulation.cpp
+    cpp/render/draw.cpp
+    cpp/render/scene_renderer.cpp
+    cpp/render/hud.cpp
+)
+target_include_directories(galileu PRIVATE cpp)   # permite #include "game/game.hpp" etc.
 target_compile_definitions(galileu PRIVATE
     GALILEU_SCRIPTS_DIR="${CMAKE_SOURCE_DIR}/scripts")
 target_link_libraries(galileu PRIVATE SDL3::SDL3 lua_lib physics)
