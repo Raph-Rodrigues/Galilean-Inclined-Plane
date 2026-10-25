@@ -1,4 +1,4 @@
-#include "game.hpp"
+#include "game/game.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -6,6 +6,7 @@
 
 #include "core/math.hpp"
 #include "render/draw.hpp"
+#include "render/energy_plot.hpp"
 #include "render/scene_renderer.hpp"
 
 namespace fs = std::filesystem;
@@ -15,6 +16,8 @@ namespace {
 
 const std::string kConfigPath = GALILEU_SCRIPTS_DIR "/config.lua";
 constexpr double kPhysicsDt = 1.0 / 120.0;
+constexpr double kSpeeds[] = {0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0};
+constexpr int kSpeedCount = (int)(sizeof(kSpeeds) / sizeof(kSpeeds[0]));
 
 std::vector<double> AnglesFromConfig(const Config &cfg) {
   return cfg.angles.empty() ? std::vector<double>{cfg.theta2} : cfg.angles;
@@ -81,6 +84,24 @@ void Game::OnEvent(const SDL_Event &e) {
   case SDLK_R:
     BeginSituation(seq_.Index());
     break;
+  case SDLK_SPACE:
+    paused_ = !paused_;
+    sim_.SetPaused(paused_);
+    break;
+  case SDLK_UP:
+    speedIdx_ = std::min(speedIdx_ + 1, kSpeedCount - 1);
+    sim_.SetSpeed(kSpeeds[speedIdx_]);
+    break;
+  case SDLK_DOWN:
+    speedIdx_ = std::max(speedIdx_ - 1, 0);
+    sim_.SetSpeed(kSpeeds[speedIdx_]);
+    break;
+  case SDLK_T:
+    opts_.trail = !opts_.trail;
+    break;
+  case SDLK_G:
+    opts_.plot = !opts_.plot;
+    break;
   case SDLK_F5:
   case SDLK_L: {
     ReloadConfig();
@@ -97,6 +118,7 @@ void Game::BeginSituation(size_t index) {
   seq_.Begin(index);
   sim_.Reset(cfg_.g, cfg_.h0, deg2rad(cfg_.theta1),
              deg2rad(seq_.CurrentAngle()));
+  history_.Clear();
 }
 
 // ------------------------------------------------------------- Hot reload --
@@ -150,16 +172,19 @@ void Game::Update(double dt) {
   if (seq_.GetPhase() == Phase::Running) {
     if (snap.latest.apex) // a thread parou a bola no ponto mais alto
       seq_.OnApex(snap.latest.s, snap.latest.height);
-  } else if (seq_.TickHold(dt)) {
+  } else if (!paused_ && seq_.TickHold(dt)) {
     BeginSituation(seq_.Index() + 1);
     snap = sim_.Read(); // estado novo, já da próxima situação
   }
 
   BuildModel(snap);
   UpdateCamera(dt);
+
+  history_.AddTrail(model_.ball);
+  history_.AddEnergy(model_.st.time, model_.st.v, model_.st.height, cfg_.g);
 }
 
-// Geometria da situação atual + posição da bola (centro deslocado pela normal)
+// Geometria da situação atual + posição da bola
 void Game::BuildModel(const SimSnapshot &snap) {
   const double H = cfg_.h0;
   const double theta1 = deg2rad(cfg_.theta1);
@@ -172,6 +197,8 @@ void Game::BuildModel(const SimSnapshot &snap) {
   m.latest = snap.latest;
   m.theta2Deg = theta2Deg;
   m.horizontal = horizontal;
+  m.paused = paused_;
+  m.speed = kSpeeds[speedIdx_];
 
   m.valley = {0.0, 0.0};
   m.leftTop = {-H / std::tan(theta1), H};
@@ -180,7 +207,16 @@ void Game::BuildModel(const SimSnapshot &snap) {
                                       cfg_.maxRun / std::cos(theta2));
   m.rightEnd = {run2 * std::cos(theta2), run2 * std::sin(theta2)};
 
-  Vec2 n{-m.st.ty, m.st.tx}; // normal do plano (aponta "para cima")
+  // Normal que desloca a bola do plano. Perto do vale (|s| < 2 raios) ela é
+  // misturada entre a normal do plano 1 e a do plano 2: a bola contorna a
+  // quina em vez de "pular" quando troca de plano.
+  Vec2 n1{std::sin(theta1), std::cos(theta1)};
+  Vec2 n2{-std::sin(theta2), std::cos(theta2)};
+  const double w = 2.0 * cfg_.radius;
+  const double mix = 0.5 * (std::clamp(m.st.s / w, -1.0, 1.0) + 1.0);
+  Vec2 n{n1.x + (n2.x - n1.x) * mix, n1.y + (n2.y - n1.y) * mix};
+  const double len = std::hypot(n.x, n.y);
+  n = {n.x / len, n.y / len};
   m.ball = {m.st.x + cfg_.radius * n.x, m.st.y + cfg_.radius * n.y};
 }
 
@@ -208,10 +244,14 @@ void Game::UpdateCamera(double dt) {
 
 // ------------------------------------------------------------------ Draw ---
 void Game::Draw(SDL_Renderer *r) {
+  SDL_SetRenderDrawBlendMode(
+      r, SDL_BLENDMODE_BLEND); // rastro e painel translúcidos
   draw::SetColor(r, draw::palette::kBackground);
   SDL_RenderClear(r);
-  render::DrawScene(r, cam_, cfg_, model_);
+  render::DrawScene(r, cam_, cfg_, model_, history_, opts_);
   render::DrawHud(r, cam_, cfg_, model_, seq_, status_, fps_);
+  if (opts_.plot)
+    render::DrawEnergyPlot(r, cam_, cfg_, history_);
 }
 
 } // namespace galileu

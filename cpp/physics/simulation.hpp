@@ -20,6 +20,8 @@ public:
 
   bool Start(double g, double h0, double theta1, double theta2, double dt);
   void Reset(double g, double h0, double theta1, double theta2);
+  void SetPaused(bool paused);
+  void SetSpeed(double speed);
   SimSnapshot Read() const;
   void Stop();
 

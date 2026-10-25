@@ -5,14 +5,14 @@ return {
 
 	physics = {
 		g = 9.81, -- m/s²
-		h0 = 5.0, -- altura inicial da bola (m)
+		h0 = 6.0, -- altura inicial da bola (m)
 		theta1 = 45.0, -- angulo do plano 1 em graus
-		theta2 = 30.0, -- angulo inicial do plano 2 em graus
+		theta2 = 90.0, -- angulo inicial do plano 2 em graus
 	},
 
 	ball = {
-		radius = 0.3, -- m
-		color = { 255, 153, 51 }, -- RGB
+		radius = 0.35, -- m
+		color = { 125, 58, 62 }, -- RGB
 	},
 
 	view = {
@@ -22,5 +22,5 @@ return {
 	},
 
 	-- etapa 5 -> sequencia de situações
-	angles = { 60, 45, 30, 15, 5, 0 },
+	angles = { 90, 60, 45, 30, 15, 5, 0 },
 }

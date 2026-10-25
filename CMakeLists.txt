@@ -55,6 +55,7 @@ add_executable(galileu
     cpp/render/draw.cpp
     cpp/render/scene_renderer.cpp
     cpp/render/hud.cpp
+    cpp/render/energy_plot.cpp
 )
 target_include_directories(galileu PRIVATE cpp)   # permite #include "game/game.hpp" etc.
 target_compile_definitions(galileu PRIVATE

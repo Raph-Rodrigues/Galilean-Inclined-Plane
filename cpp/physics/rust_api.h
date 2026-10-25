@@ -28,4 +28,6 @@ void physics_reset(PhysicsEngine *e, double g, double h0, double theta1,
 void physics_get_snapshots(const PhysicsEngine *e, PhysicsState *prev,
                            PhysicsState *curr, double *alpha);
 
+void physics_set_paused(PhysicsEngine *e, bool paused);
+void physics_set_speed(PhysicsEngine *e, double speed);
 } // extern "C"

@@ -1,15 +1,40 @@
-#include "scene_renderer.hpp"
+#include "render/scene_renderer.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 
-#include "draw.hpp"
+#include "render/draw.hpp"
 
 namespace galileu::render {
+namespace {
+
+// rastro: some aos poucos (mais antigo = mais transparente) e termina na bola
+void DrawTrail(SDL_Renderer *r, const Camera &cam, const Config &cfg,
+               const SceneModel &m, const History &hist) {
+  const auto &t = hist.Trail();
+  if (t.empty())
+    return;
+  const size_t n = t.size();
+  const Uint8 cr = (Uint8)(cfg.ballColor.r * 255.0f);
+  const Uint8 cg = (Uint8)(cfg.ballColor.g * 255.0f);
+  const Uint8 cb = (Uint8)(cfg.ballColor.b * 255.0f);
+
+  SDL_FPoint prev = cam.ToScreen(t[0]);
+  for (size_t i = 1; i <= n; ++i) {
+    SDL_FPoint cur = cam.ToScreen(i < n ? t[i] : m.ball);
+    Uint8 a = (Uint8)(20.0 + 150.0 * (double)i / (double)n);
+    SDL_SetRenderDrawColor(r, cr, cg, cb, a);
+    SDL_RenderLine(r, prev.x, prev.y, cur.x, cur.y);
+    prev = cur;
+  }
+}
+
+} // namespace
 
 void DrawScene(SDL_Renderer *r, const Camera &cam, const Config &cfg,
-               const SceneModel &m) {
+               const SceneModel &m, const History &hist,
+               const ViewOptions &opts) {
   using namespace draw;
   char buf[160];
   const double H = cfg.h0;
@@ -32,6 +57,10 @@ void DrawScene(SDL_Renderer *r, const Camera &cam, const Config &cfg,
        {std::clamp(m.rightEnd.x * 0.5, xmin + 4.0, xmax - 12.0),
         m.rightEnd.y * 0.5},
        -40, 16, buf);
+
+  // rastro (por baixo da bola)
+  if (opts.trail)
+    DrawTrail(r, cam, cfg, m, hist);
 
   // bola
   FillCircle(

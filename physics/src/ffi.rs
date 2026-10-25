@@ -53,3 +53,17 @@ pub unsafe extern "C" fn physics_get_snapshots(
     *curr = c;
     *alpha = a;
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn physics_set_paused(e: *mut Engine, paused: bool) {
+    if let Some(e) = e.as_ref() {
+        e.set_paused(paused);
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn physics_set_speed(e: *mut Engine, speed: f64) {
+    if let Some(e) = e.as_ref() {
+        e.set_speed(speed);
+    }
+}

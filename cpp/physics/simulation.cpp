@@ -1,4 +1,5 @@
 #include "simulation.hpp"
+#include "rust_api.h"
 
 namespace galileu {
 namespace {
@@ -38,6 +39,18 @@ bool Simulation::Start(double g, double h0, double theta1, double theta2,
 void Simulation::Reset(double g, double h0, double theta1, double theta2) {
   if (engine_)
     physics_reset(engine_, g, h0, theta1, theta2);
+}
+
+void Simulation::SetPaused(bool paused) {
+  if (engine_) {
+    physics_set_paused(engine_, paused);
+  }
+}
+
+void Simulation::SetSpeed(double speed) {
+  if (engine_) {
+    physics_set_speed(engine_, speed);
+  }
 }
 
 SimSnapshot Simulation::Read() const {

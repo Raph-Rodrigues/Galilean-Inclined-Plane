@@ -89,10 +89,10 @@ void Numbers(SDL_Renderer *r, const Config &cfg, const SceneModel &m,
            "Situacao %zu/%zu   theta1 = %.1f   theta2 = %.1f deg",
            seq.Index() + 1, seq.Count(), cfg.theta1, m.theta2Deg);
   SDL_RenderDebugText(r, 10, 10, buf);
-  snprintf(
-      buf, sizeof buf,
-      "t = %.2f s   passos = %llu   fisica: 120 Hz (thread)   render: %.0f FPS",
-      m.latest.time, (unsigned long long)m.latest.steps, fps);
+  snprintf(buf, sizeof buf,
+           "t = %.2f s   velocidade x%g%s   passos = %llu   render: %.0f FPS",
+           m.st.time, m.speed, m.paused ? "  [PAUSADO]" : "",
+           (unsigned long long)m.latest.steps, fps);
   SDL_RenderDebugText(r, 10, 24, buf);
   snprintf(buf, sizeof buf, "s = %7.3f m   v = %7.3f m/s   h = %6.3f m", m.st.s,
            m.st.v, m.st.height);
@@ -100,15 +100,18 @@ void Numbers(SDL_Renderer *r, const Config &cfg, const SceneModel &m,
   snprintf(buf, sizeof buf, "E/m = %.6f J/kg", m.st.energy);
   SDL_RenderDebugText(r, 10, 52, buf);
   SDL_RenderDebugText(r, 10, 66,
-                      "Setas: situacao | R: reinicia | F5/L: recarrega "
-                      "config.lua (auto ao salvar) | ESC: sair");
+                      "Espaco: pausa | Cima/Baixo: velocidade | T: rastro | G: "
+                      "grafico de energia");
+  SDL_RenderDebugText(r, 10, 78,
+                      "Setas esq/dir: situacao | R: reinicia | F5/L: recarrega "
+                      "config.lua | ESC: sair");
 }
 
 // distância percorrida no plano 2, por situação
 void ResultsTable(SDL_Renderer *r, const SceneModel &m, const Sequence &seq) {
   char buf[120];
   SetColor(r, palette::kText);
-  SDL_RenderDebugText(r, 10, 90, "Distancia percorrida no plano 2:");
+  SDL_RenderDebugText(r, 10, 100, "Distancia percorrida no plano 2:");
 
   const auto &angles = seq.Angles();
   const auto &results = seq.Results();
@@ -126,7 +129,7 @@ void ResultsTable(SDL_Renderer *r, const SceneModel &m, const Sequence &seq) {
       snprintf(buf, sizeof buf, "> %5.1f graus: em andamento", angles[i]);
     else
       snprintf(buf, sizeof buf, "  %5.1f graus: --", angles[i]);
-    SDL_RenderDebugText(r, 10, 104.0f + 14.0f * (float)i, buf);
+    SDL_RenderDebugText(r, 10, 114.0f + 14.0f * (float)i, buf);
   }
 }
 

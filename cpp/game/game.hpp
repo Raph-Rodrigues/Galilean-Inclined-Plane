@@ -5,13 +5,14 @@
 #include <optional>
 #include <string>
 
-#include "../lua/config.hpp"
-#include "../lua/script_host.hpp"
-#include "../physics/simulation.hpp"
-#include "../render/camera.hpp"
-#include "../render/hud.hpp"
-#include "../render/scene_model.hpp"
-#include "sequence.hpp"
+#include "core/history.hpp"
+#include "game/sequence.hpp"
+#include "lua/config.hpp"
+#include "lua/script_host.hpp"
+#include "physics/simulation.hpp"
+#include "render/camera.hpp"
+#include "render/hud.hpp"
+#include "render/scene_model.hpp"
 
 namespace galileu {
 
@@ -53,11 +54,15 @@ private:
   Sequence seq_;
   Camera cam_;
   SceneModel model_;
+  History history_;
+  ViewOptions opts_;
   StatusMessage status_;
 
   std::filesystem::file_time_type cfgStamp_{};
   double pollTimer_ = 0.0;
   double fps_ = 0.0;
+  int speedIdx_ = 3; // índice em kSpeeds (x1)
+  bool paused_ = false;
   bool camInit_ = false;
   bool quit_ = false;
   bool windowDirty_ = false;
